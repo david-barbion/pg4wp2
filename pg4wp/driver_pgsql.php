@@ -55,8 +55,6 @@
 	function wpsql_escape_string($s) { return pg_escape_string($s); }
 	function wpsql_real_escape_string($s,$c=NULL) { return pg_escape_string($s); }
 	function wpsql_get_server_info() { return '5.0.30'; } // Just want to fool wordpress ...
-/*	function wpsql_result($result, $i, $fieldname)
-		{ return pg_fetch_result($result, $i, $fieldname); } changed for in 3.9 */
 	function wpsql_result($result, $i, $fieldname = null) {
 		if (is_resource($result)) {
 			if ($fieldname) {
@@ -213,6 +211,9 @@
 		if( 0 === strpos($sql, 'SELECT'))
 		{
 			$logto = 'SELECT';
+                        if( false !== strpos($sql, '@@SESSION.sql_mode')) {
+                          $sql = 'SELECT null';
+                        }
 			// SQL_CALC_FOUND_ROWS doesn't exist in PostgreSQL but it's needed for correct paging
 			if( false !== strpos($sql, 'SQL_CALC_FOUND_ROWS'))
 			{
@@ -293,6 +294,8 @@
 			// Akismet sometimes doesn't write 'comment_ID' with 'ID' in capitals where needed ...
 			if( false !== strpos( $sql, $wpdb->comments))
 				$sql = str_replace(' comment_id ', ' comment_ID ', $sql);
+			// another hack for Akismet
+			$sql = str_replace('INNER JOIN wp_comments as c USING(comment_id)', 'INNER JOIN wp_comments as c on c.comment_ID = m.comment_id', $sql);
 			
 		} // SELECT
 		elseif( 0 === strpos($sql, 'UPDATE'))
@@ -316,6 +319,7 @@
 		elseif( 0 === strpos($sql, 'INSERT'))
 		{
 			$logto = 'INSERT';
+			$sql = str_replace('INSERT IGNORE', 'INSERT', $sql) ;
 			$sql = str_replace('(0,',"('0',", $sql);
 			$sql = str_replace('(1,',"('1',", $sql);
 			
@@ -372,8 +376,13 @@
 		{
 			$logto = 'DELETE';
 			// LIMIT is not allowed in DELETE queries
-			$sql = str_replace( 'LIMIT 1', '', $sql);
+			//$sql = str_replace( 'LIMIT 1', '', $sql);
+			$sql = preg_replace( '/ORDER[ ]+BY[ ]+[^\s]+/i', '', $sql);
+			$sql = preg_replace( '/LIMIT[ ]+\d+/i', '', $sql);
 			$sql = str_replace( ' REGEXP ', ' ~ ', $sql);
+
+			// Handle CAST( ... AS UNSIGNED)
+			$sql = preg_replace( '/CAST[ ]*\((.+)[ ]+AS[ ]+UNSIGNED[ ]*\)/', 'CAST($1 AS INTEGER)', $sql);
 			
 			// This handles removal of duplicate entries in table options
 			if( false !== strpos( $sql, 'DELETE o1 FROM '))
@@ -391,6 +400,12 @@
 		{
 			$logto = 'SHOWTABLES';
 			$sql = 'SELECT tablename FROM pg_tables WHERE schemaname = \'public\';';
+		}
+		// Fix utf8mb4 conversion list
+		elseif( 0 === strpos($sql, 'SHOW FULL COLUMNS FROM '))
+		{
+			$logto = 'SHOWTABLES';
+			$sql = 'select NULL';
 		}
 		// Rewriting optimize table
 		elseif( 0 === strpos($sql, 'OPTIMIZE TABLE'))
@@ -489,10 +504,8 @@
 		}
 		return $sql;
 	}
-
-	function wpsql_errno($connection)
-	{
- 		$result = pg_get_result($connection);
-		$result_status = pg_result_status($result);
-		return pg_result_error_field($result_status, PGSQL_DIAG_SQLSTATE);
-	}
+function wpsql_errno( $connection) {
+ $result = pg_get_result($connection);
+ $result_status = pg_result_status($result);
+ return pg_result_error_field($result_status, PGSQL_DIAG_SQLSTATE);
+ }
